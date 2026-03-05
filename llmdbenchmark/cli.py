@@ -10,6 +10,7 @@ The CLI allows users to:
 
 - Generate plans for model infrastructure (`plan` command).
 - Provision and run experiments (`standup` command).
+- Tear down previously deployed stacks (`teardown` command).
 - Configure workspace directories, logging, and execution options.
 - Execute a dry run to generate YAML and Helm manifests without applying them.
 
@@ -33,7 +34,7 @@ from llmdbenchmark.utilities.os.filesystem import (
     get_absolute_path,
 )
 from llmdbenchmark.interface.commands import Command
-from llmdbenchmark.interface import plan, standup
+from llmdbenchmark.interface import plan, standup, teardown
 from llmdbenchmark.parser.render_specification import RenderSpecification
 from llmdbenchmark.exceptions.exceptions import TemplateError
 from llmdbenchmark.parser.render_plans import RenderPlans
@@ -41,7 +42,8 @@ from llmdbenchmark.parser.version_resolver import VersionResolver
 from llmdbenchmark.executor.step import Phase
 from llmdbenchmark.executor.context import ExecutionContext
 from llmdbenchmark.executor.step_executor import StepExecutor
-from llmdbenchmark.executor.steps import get_standup_steps
+from llmdbenchmark.standup.steps import get_standup_steps
+from llmdbenchmark.teardown.steps import get_teardown_steps
 
 
 def setup_workspace(
@@ -81,6 +83,7 @@ def dispatch_cli(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.command in (
         Command.PLAN.value,
         Command.STANDUP.value,
+        Command.TEARDOWN.value,
     ):
 
         #
@@ -129,6 +132,9 @@ def dispatch_cli(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.command == Command.STANDUP.value:
         _execute_standup(args, logger, render_plan_errors)
 
+    if args.command == Command.TEARDOWN.value:
+        _execute_teardown(args, logger, render_plan_errors)
+
 
 def _execute_standup(args, logger, render_plan_errors):
     """Build execution context and run standup steps."""
@@ -169,6 +175,52 @@ def _execute_standup(args, logger, render_plan_errors):
     logger.log_info("All standup steps complete.", emoji="✅")
 
 
+def _execute_teardown(args, logger, render_plan_errors):
+    """Build execution context and run teardown steps."""
+    methods_str = getattr(args, "methods", None)
+    if methods_str:
+        deployed_methods = [m.strip() for m in methods_str.split(",")]
+    else:
+        deployed_methods = ["modelservice"]
+
+    context = ExecutionContext(
+        plan_dir=config.plan_dir,
+        workspace=config.workspace,
+        rendered_stacks=getattr(render_plan_errors, "rendered_paths", []),
+        dry_run=config.dry_run,
+        verbose=config.verbose,
+        non_admin=getattr(args, "non_admin", False),
+        current_phase=Phase.TEARDOWN,
+        kubeconfig=getattr(args, "kubeconfig", None),
+        deployed_methods=deployed_methods,
+        deep_clean=getattr(args, "deep", False),
+        release=getattr(args, "release", "llmdbench"),
+        logger=logger,
+    )
+
+    executor = StepExecutor(
+        steps=get_teardown_steps(),
+        context=context,
+        logger=logger,
+    )
+
+    step_spec = getattr(args, "step", None)
+    result = executor.execute(step_spec=step_spec)
+
+    if result.has_errors:
+        logger.log_error(f"Teardown failed:\n{result.summary()}")
+        sys.exit(1)
+
+    ns = context.namespace or "unknown"
+    harness_ns = context.harness_namespace or ns
+    logger.line_break()
+    logger.log_info(
+        f"Teardown complete. Namespaces \"{ns}\", \"{harness_ns}\" "
+        f"are now cleared.",
+        emoji="✅",
+    )
+
+
 def cli() -> None:
     """
     Parse CLI arguments, create workspace, configure logging, and execute
@@ -179,7 +231,7 @@ def cli() -> None:
         - Configures the global singleton `config` with workspace, log paths,
           verbosity, and dry-run settings.
         - Initializes a logger for console and file output.
-        - Dispatches execution to subcommands defined in `plan` and `standup`.
+        - Dispatches execution to subcommands defined in `plan`, `standup`, and `teardown`.
 
     Returns:
         None
@@ -259,6 +311,7 @@ def cli() -> None:
 
     plan.add_subcommands(subparsers)
     standup.add_subcommands(subparsers)
+    teardown.add_subcommands(subparsers)
 
     args = parser.parse_args()
 

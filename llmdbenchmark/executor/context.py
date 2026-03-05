@@ -28,7 +28,7 @@ class ExecutionContext:  # pylint: disable=too-many-instance-attributes
     # Core paths
     plan_dir: Path
     workspace: Path
-    base_dir: Path | None = None  # project root (for preprocess scripts, etc.)
+    base_dir: Path | None = None  # project root (for templates, scenarios, etc.)
     rendered_stacks: list[Path] = field(default_factory=list)
 
     # Execution flags
@@ -37,6 +37,8 @@ class ExecutionContext:  # pylint: disable=too-many-instance-attributes
     non_admin: bool = False
     current_phase: Phase = Phase.STANDUP
     analyze_locally: bool = False  # skip gate for conda (step 01)
+    deep_clean: bool = False       # teardown: wipe all resources in namespaces
+    release: str = "llmdbench"     # Helm release name prefix
 
     # Kubernetes connection info (resolved at runtime by step 00)
     cluster_url: str | None = None
@@ -121,9 +123,20 @@ class ExecutionContext:  # pylint: disable=too-many-instance-attributes
         return env_dir
 
     def preprocess_dir(self) -> Path | None:
-        """Return the path to the preprocess scripts directory, if base_dir is set."""
+        """Return the path to the preprocess scripts directory.
+
+        Looks for ``llmdbenchmark/standup/preprocess/`` relative to the
+        package installation (resolved via ``__file__``).  Falls back to
+        ``base_dir/standup/preprocess`` if ``base_dir`` is set.
+        """
+        # Primary: resolve relative to the installed package
+        pkg_dir = Path(__file__).resolve().parent.parent  # llmdbenchmark/
+        d = pkg_dir / "standup" / "preprocess"
+        if d.is_dir():
+            return d
+        # Fallback: relative to base_dir (editable installs, dev setups)
         if self.base_dir:
-            d = self.base_dir / "setup" / "preprocess"
+            d = self.base_dir / "llmdbenchmark" / "standup" / "preprocess"
             if d.is_dir():
                 return d
         return None

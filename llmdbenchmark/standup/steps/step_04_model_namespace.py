@@ -181,7 +181,7 @@ class ModelNamespaceStep(Step):
     def _create_preprocesses_configmap(
         self, cmd: CommandExecutor, context: ExecutionContext, errors: list
     ):
-        """Create a ConfigMap from ``setup/preprocess/*`` scripts.
+        """Create a ConfigMap from ``standup/preprocess/*`` scripts.
 
         The resulting ``llm-d-benchmark-preprocesses`` ConfigMap is mounted
         at ``/setup/preprocess`` in vLLM pods via ``vllmCommon.volumes``.

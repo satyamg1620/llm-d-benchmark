@@ -226,7 +226,7 @@ metadata:
         self, cmd: CommandExecutor, context: ExecutionContext,
         harness_ns: str, errors: list
     ):
-        """Create a ConfigMap from ``setup/preprocess/*`` scripts in the harness namespace."""
+        """Create a ConfigMap from ``standup/preprocess/*`` scripts in the harness namespace."""
         preprocess_dir = context.preprocess_dir()
         config_map_name = "llm-d-benchmark-preprocesses"
 

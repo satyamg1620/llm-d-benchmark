@@ -4,32 +4,34 @@ base_dir: {{ base_dir }}
 
 # [REQUIRED]
 values_file:
-  path: {{ base_dir }}/templates/values/defaults.yaml
+  path: {{ base_dir }}/config/templates/values/defaults.yaml
 
 # [REQUIRED]
 template_dir:
-  path: {{ base_dir }}/templates/jinja
+  path: {{ base_dir }}/config/templates/jinja
 
 # [OPTIONAL]
 scenario_file:
-  path: {{ base_dir }}/scenarios/guides/tiered-prefix-cache.yaml
+  path: {{ base_dir }}/config/scenarios/guides/precise-prefix-cache-aware.yaml
 
 # [OPTIONAL] Experiment definitions
 experiments:
-  - name: "tiered-prefix-cache"
+  - name: "precise-prefix-cache-aware"
     attributes:
       - name: "setup"
         constants:
           - model.maxModelLen: 12000
           - model.blockSize: 64
         factors:
-          - name: vllmCommon.numCpuBlocks
-            levels: [500, 1000, 2000, 5000]
+          - name: inferenceExtension.pluginsConfigFile
+            levels:
+              - default
+              - prefix-cache-estimate-config
+              - prefix-cache-tracking-config
         treatments:
-          - "500"
-          - "1000"
-          - "2000"
-          - "5000"
+          - "default"
+          - "prefix-cache-estimate-config"
+          - "prefix-cache-tracking-config"
       - name: "run"
         constants:
           - streaming: true

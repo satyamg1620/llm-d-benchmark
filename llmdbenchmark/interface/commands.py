@@ -12,3 +12,4 @@ class Command(Enum):
 
     PLAN = "plan"
     STANDUP = "standup"
+    TEARDOWN = "teardown"
