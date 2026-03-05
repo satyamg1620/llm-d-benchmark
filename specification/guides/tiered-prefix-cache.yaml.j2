@@ -1,0 +1,44 @@
+# [REQUIRED]
+{% set base_dir = base_dir | default('../') -%}
+base_dir: {{ base_dir }}
+
+# [REQUIRED]
+values_file:
+  path: {{ base_dir }}/templates/values/defaults.yaml
+
+# [REQUIRED]
+template_dir:
+  path: {{ base_dir }}/templates/jinja
+
+# [OPTIONAL]
+scenario_file:
+  path: {{ base_dir }}/scenarios/guides/tiered-prefix-cache.yaml
+
+# [OPTIONAL] Experiment definitions
+experiments:
+  - name: "tiered-prefix-cache"
+    attributes:
+      - name: "setup"
+        constants:
+          - model.maxModelLen: 12000
+          - model.blockSize: 64
+        factors:
+          - name: vllmCommon.numCpuBlocks
+            levels: [500, 1000, 2000, 5000]
+        treatments:
+          - "500"
+          - "1000"
+          - "2000"
+          - "5000"
+      - name: "run"
+        constants:
+          - streaming: true
+        factors:
+          - name: num_groups
+            levels: [40, 60]
+          - name: system_prompt_len
+            levels: [80000, 5000, 1000]
+        treatments:
+          - "40,8000"
+          - "60,5000"
+          - "60,1000"

@@ -58,3 +58,14 @@ def add_subcommands(parser: argparse._SubParsersAction):
     standup_parser.add_argument(
         "-u", "--wva", help="Enable Workload Variant Autoscaler."
     )
+    standup_parser.add_argument(
+        "--parallel",
+        type=int,
+        default=4,
+        help="Max number of stacks to deploy in parallel (default: 4).",
+    )
+    standup_parser.add_argument(
+        "--kubeconfig",
+        "-k",
+        help="Path to kubeconfig file for kubectl/helm/helmfile commands.",
+    )

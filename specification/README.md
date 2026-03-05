@@ -1,126 +1,253 @@
-# Specification Guidelines
+# Specification Templates
 
-The specification directory contains a number of Jinja files that will be rendered into YAML documents.
-Each Jinja file pertains to a specific stack that `llmdbenchmark` will provision that pertains to an optional scenario, and optional
-experiment(s) to be run. The below sections will elaborate on this further.
+Specification files tell `llmdbenchmark` where to find its inputs: default values, Jinja2 templates, scenario overrides, and optional experiment definitions. Each specification is a Jinja2 template (`.yaml.j2`) that gets rendered into a plain YAML document during the plan phase.
 
-## Jinja Usage
+## Directory Layout
 
-As seen in the templates found in this repository, we make strong use of Jinja, and we will do that here as well with
-the intention to push the the rendering to the Jinja library, rather than making that logic hard coded into our tooling.
+```text
+specification/
+    guides/                 Specifications for llm-d well-lit-path guides
+        inference-scheduling.yaml.j2
+        pd-disaggregation.yaml.j2
+        precise-prefix-cache-aware.yaml.j2
+        tiered-prefix-cache.yaml.j2
+        wide-ep-lws.yaml.j2
+        simulated-accelerators.yaml.j2
+    examples/               Minimal working specifications for common hardware
+        cpu.yaml.j2
+        gpu.yaml.j2
+        spyre.yaml.j2
+    cicd/                   CI/CD pipeline specifications
+        cks.yaml.j2
+        gke-h100.yaml.j2
+        kind-sim.yaml.j2
+        ocp.yaml.j2
+    README.md               
+```
 
-The specification files here will have a simple templated value `base_dir` - the reason we do this is to allow the user to 
-override these files in a structured way - not all users have the same `base_dir` - we want to accomodate those that may
-have completely rearranged their structure.
+- **guides/** -- Map directly to the [llm-d guides](https://github.com/llm-d/llm-d/tree/main/guides). Each specification pairs a scenario with optional experiment definitions to reproduce the guide's benchmark.
+- **examples/** -- Starting points for users deploying on CPU, GPU, or IBM Spyre hardware. No experiments are defined; they only stand up a stack.
+- **cicd/** -- Used by automated CI/CD pipelines targeting specific cluster environments.
 
-The default value for `base_dir` in these documents is `../` - pertaining to the default structure of this repository (root of the repository).
+## How Specifications Work
 
-To override the `base_dir` value, we recommend the user to utilize the `cli flag` provided through `llmdbenchmark --base_dir <directory> <...other cmds...>`
+A specification connects four things:
 
-For an example of what the rendered template looks like, albeit simple, the `examples` directory shows a template and fully rendered contents of the respective template.
+```text
+defaults.yaml        The base configuration (templates/values/defaults.yaml)
+     +
+scenario.yaml        Overrides for a specific deployment (scenarios/**/*.yaml)
+     +
+templates/jinja/     Jinja2 templates that produce Kubernetes manifests
+     +
+experiments          Optional parameter sweeps (embedded in the specification)
+     |
+     v
+  [plan phase]       llmdbenchmark renders all of the above into static YAMLs
+     |
+     v
+  rendered stacks/   Ready-to-apply Kubernetes manifests
+```
+
+During the plan phase, scenario values override matching keys from `defaults.yaml`. The merged values are then fed into the Jinja2 templates to produce the final Kubernetes manifests. If experiments are defined, the plan generates one rendered stack per treatment combination.
 
 ## Specification Structure
 
-### Content Expectations
+### Required Fields
 
-The specification directory contains a grouping of YAML documents that will detail the following content per specification:
+Every specification must declare three paths:
 
 ```yaml
-#
-# Required
-#
-base_dir
-values_dir
-template_dir
+# Base directory -- all other paths are relative to this
+{% set base_dir = base_dir | default('../') -%}
+base_dir: {{ base_dir }}
 
-#
-# Optional
-#
-scenario_file
-experiments
+# Path to the defaults file
+values_file:
+  path: {{ base_dir }}/templates/values/defaults.yaml
+
+# Directory containing Jinja2 templates
+template_dir:
+  path: {{ base_dir }}/templates/jinja
 ```
 
-### Example of a Template Specification
-
-An annotated example of the template specification template can be observed below for an `inference-scheduling` scenario and experiment:
+### Optional Fields
 
 ```yaml
+# Scenario file with values that override defaults
+scenario_file:
+  path: {{ base_dir }}/scenarios/guides/inference-scheduling.yaml
 
-# -------------------
-# Required Parameters
-# -------------------
+# Experiment definitions for parameter sweeps
+experiments:
+  - name: "experiment-name"
+    attributes:
+      - name: "setup"
+        factors: [...]
+        treatments: [...]
+      - name: "run"
+        factors: [...]
+        treatments: [...]
+```
+
+If `scenario_file` is omitted, only the default values are used. If `experiments` is omitted, a single stack is rendered (no parameter sweeps).
+
+## The `base_dir` Variable
+
+All paths in a specification are relative to `base_dir`. The Jinja2 line at the top of every specification handles this:
+
+```yaml
+{% set base_dir = base_dir | default('../') -%}
+```
+
+The default `../` is correct when running from the repository root (since specifications live in `specification/`). To override it, use the CLI flag:
+
+```bash
+llmdbenchmark --bd /path/to/repo --spec specification/guides/inference-scheduling.yaml.j2 plan
+```
+
+This allows users with custom directory layouts to point to their own defaults, templates, and scenarios without modifying the specification file.
+
+## Creating a New Specification
+
+### Standup Only (No Experiments)
+
+For a specification that stands up a single stack without experiments:
+
+1. Create a scenario YAML under `scenarios/` with your deployment overrides (model, GPU count, namespace, etc.)
+2. Create a specification template:
+
+```yaml
+# My Custom Deployment
+# Deploys <model> on <hardware>.
 
 # [REQUIRED]
-# The base directory to use when finding the subdirectories and files below.
-# 
-# In this example, we assume we are working from the repository it self, the location of this
-# file is nested in a subdirectory, so will appropriately target the root direcotry of the
-# repository.
-# 
-# Note. You can provide absolute paths, or different paths, if you have custom configurations.
-# Please do note you will need to adjust the subsequent directories to accomodate your changes if
-# those directory locations have also been changed such that it breaks the existing template.
-# 
-
-{% set base_dir = '../' -%}
-
+{% set base_dir = base_dir | default('../') -%}
 base_dir: {{ base_dir }}
 
 # [REQUIRED]
-# Directory containing default values for generating YAMLs
-values_dir:
-  path: {{ base_dir }}templates/values
+values_file:
+  path: {{ base_dir }}/templates/values/defaults.yaml
 
 # [REQUIRED]
-# Directory containing all template files that will be populated from loading
-# both the values and scenarios (overrides) files.
 template_dir:
-  path: {{ base_dir }}templates/jinja
-   
-# -------------------
-# Optional Parameters
-# -------------------
+  path: {{ base_dir }}/templates/jinja
 
-# [OPTIONAL] 
-# Specific file containing a scenario that will have values that will override the default
-# values supplied in the values_dir. 
-# 
-# If the attribute "scenario_file" is not declared, then the
-# default values will be used as the scenario.
+# [OPTIONAL]
 scenario_file:
-  path: {{ base_dir }}scenarios/inference-scheduling.yaml
+  path: {{ base_dir }}/scenarios/my-scenario.yaml
+```
 
-# [OPTIONAL] 
-# Experiment schema that will generate the cartesian product of all values specified in the below
-# section. These values will be used as the final override values in generating the complete set
-# of YAML documents to be used during provision and runtime. 
-# 
-# If the attribute "experiments" is not provided, then it is assumed the user ONLY wants to 
-# provision (standup) a stack.
+3. Run the plan:
+
+```bash
+llmdbenchmark --spec specification/my-spec.yaml.j2 plan
+```
+
+### With Experiments
+
+To add parameter sweeps, include an `experiments` section. Experiments have two attribute categories:
+
+- **`setup`** -- Parameters that change the deployment (e.g., number of replicas, scheduler plugin). Each treatment generates a separate rendered stack.
+- **`run`** -- Parameters that change the benchmark workload (e.g., concurrency, prompt length). These are used during the run phase, not during standup.
+
+Each attribute category contains:
+
+| Field | Purpose |
+|-------|---------|
+| `factors` | Parameters being varied, each with a list of `levels` (possible values) |
+| `constants` | Fixed parameters applied to every treatment (optional) |
+| `treatments` | Explicit combinations of factor levels to test |
+
+Example with both setup and run experiments:
+
+```yaml
 experiments:
-  - name: "experiment-1"
+  - name: "my-experiment"
     attributes:
-      - name: "harness"
+      # Setup factors change the deployment
+      - name: "setup"
         factors:
-          - name: data.shared_prefix.question_len 
+          - name: inferenceExtension.pluginsConfigFile
             levels:
-              - 100
-              - 300
-              - 1000
-          - name: data.shared_prefix.output_len
-            levels:
-              - 100
-              - 300
-              - 1000
+              - none.yaml
+              - prefix.yaml
+              - kv.yaml
+        treatments:
+          - "none.yaml"
+          - "prefix.yaml"
+          - "kv.yaml"
+
+      # Run factors change the benchmark workload
+      - name: "run"
+        constants:
+          - streaming: true
+        factors:
+          - name: question_len
+            levels: [100, 300, 1000]
+          - name: output_len
+            levels: [100, 300]
         treatments:
           - "100,100"
           - "100,300"
-          - "100,1000"
           - "300,100"
           - "300,300"
-          - "300,1000"
           - "1000,100"
           - "1000,300"
-          - "1000,1000"
-
 ```
+
+## Usage
+
+Plan a deployment (renders templates into Kubernetes manifests):
+
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 plan
+```
+
+Stand up the deployment (plans + applies to cluster):
+
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 standup
+```
+
+Dry run (renders all manifests without touching the cluster):
+
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 --dry-run standup
+```
+
+Override `base_dir` for custom layouts:
+
+```bash
+llmdbenchmark --bd /my/custom/repo --spec specification/guides/inference-scheduling.yaml.j2 plan
+```
+
+## Available Specifications
+
+### Guides
+
+| Specification | Scenario | Experiments |
+|---------------|----------|-------------|
+| `inference-scheduling.yaml.j2` | Qwen3-32B with inference scheduling plugins | GAIE plugin configs x prompt/output lengths |
+| `pd-disaggregation.yaml.j2` | Prefill/decode disaggregation | Deployment method, replicas, TP sizes x concurrency |
+| `precise-prefix-cache-aware.yaml.j2` | Prefix cache aware routing | GAIE prefix cache configs x prompt groups |
+| `tiered-prefix-cache.yaml.j2` | Tiered CPU/GPU prefix cache | CPU block sizes x prompt groups |
+| `wide-ep-lws.yaml.j2` | Expert parallelism with LeaderWorkerSet | Standup only |
+| `simulated-accelerators.yaml.j2` | CPU-only simulation with opt-125m | Standup only |
+
+### Examples
+
+| Specification | Description |
+|---------------|-------------|
+| `cpu.yaml.j2` | CPU-only deployment (no GPU) |
+| `gpu.yaml.j2` | Standard GPU deployment |
+| `spyre.yaml.j2` | IBM Spyre accelerator deployment |
+
+### CI/CD
+
+| Specification | Description |
+|---------------|-------------|
+| `cks.yaml.j2` | Cloud Kubernetes Service with H200 |
+| `gke-h100.yaml.j2` | Google Kubernetes Engine with H100 |
+| `kind-sim.yaml.j2` | Kind cluster with simulated accelerators |
+| `ocp.yaml.j2` | OpenShift Container Platform with Istio |

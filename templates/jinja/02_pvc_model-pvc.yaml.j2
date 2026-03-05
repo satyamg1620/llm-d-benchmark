@@ -11,4 +11,6 @@ spec:
   resources:
     requests:
       storage: {{ storage.modelPvc.size }}
+{% if storage.modelPvc.storageClassName is defined and storage.modelPvc.storageClassName not in ["default", "auto", ""] %}
   storageClassName: {{ storage.modelPvc.storageClassName }}
+{% endif %}

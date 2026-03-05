@@ -1,166 +1,176 @@
-# In-Progress Refactor
+# `llm-d`-benchmark
 
-**This readme will eventually be completely refactored**
+Automated workflow for benchmarking LLM inference using the `llm-d` stack. Includes tools for deployment, experiment execution, data collection, and teardown across multiple environments and deployment styles.
 
-## `llm-d`-benchmark
-
-This repository provides an automated workflow for benchmarking LLM inference using the `llm-d` stack. It includes tools for deployment, experiment execution, data collection, and teardown across multiple environments and deployment styles.
-
-### Main Goal
+## Main Goal
 
 Provide a single source of automation for repeatable and reproducible experiments and performance evaluation on `llm-d`.
 
 ## Prerequisites
+
 Please refer to the official [llm-d prerequisites](https://github.com/llm-d/llm-d/blob/main/README.md#pre-requisites) for the most up-to-date requirements.
-For the client setup, the provided `install-deps.sh` will download and install the necessary tools.
 
 ### Administrative Requirements
-Deploying the llm-d stack requires **cluster-level admin** privileges, as you will be configuring cluster-level resources.
-However, the scripts can be executed by **namespace-level admin** users, as long as the [Kubernetes infrastructure components](https://github.com/llm-d-incubation/llm-d-infra) are configured and the **target namespace already exists**.
 
+Deploying the llm-d stack requires **cluster-level admin** privileges for configuring cluster-level resources. However, **namespace-level admin** users can run the tool as long as [Kubernetes infrastructure components](https://github.com/llm-d-incubation/llm-d-infra) are configured and the target namespace already exists. Use `--non-admin` to skip admin-only steps.
 
-## 📦 Repository Setup
+## Repository Setup
 
-```
+```bash
 git clone https://github.com/llm-d/llm-d-benchmark.git
 cd llm-d-benchmark
-./setup/install_deps.sh
+pip install -e .
 ```
-
 
 ## Quickstart
 
-**Out of the box:** **`standup`** a `llm-d` stack (default method is `llm-d-modelservice`, serving `meta-llama/Llama-3.2-1B-Instruct` model), **`run`** a harness (default `inference-perf`) with a load profile (default `sanity_random`) and then **`teardown`** the deployed stack.
+**Plan** the deployment (renders Jinja2 templates into YAML manifests):
 
-```
-./e2e.sh
-```
-
-> [!TIP]
-> The penultimate line on the output, starting with "ℹ️   The current work dir is" will indicate the current path for the generated standup files and collected performance data.
-
-The same above example could be explicitly split in three separate parts.
-
-```
-./setup/standup.sh
-./run.sh
-./setup/teardown.sh
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 plan
 ```
 
-A user can elect to  **`standup`** an `llm-d` stack once, and then **`run`** the `inference-perf` harness with a different load profile (i.e., `chatbot_synthetic`)
+**Stand up** a full `llm-d` stack (plans + applies to cluster):
 
-```
-./run.sh --harness inference-perf --workload chatbot_synthetic --methods <a string that matches a inference service or pod>`
-```
-
-> [!TIP]
-> `./run.sh` can be used to run a particular workload against an already stood up stack (`llm-d` or otherwise)
-
-An illustrative example on is present [here](docs/tutorials/run/run_against_existing_example.md)
-
-> [!TIP]
-> `./run.sh` can also be used in "interactive" (or "debug") mode (option `-d` or `--debug`)
-
-An illustrative example on is present [here](docs/tutorials/run/run_interactively_example.md)
-
-### News
-
--  KubeCon/NativeCloudCon 2025 North America Talk "A Cross-Industry Benchmarking Tutorial for Distributed LLMInference on Kubernetes", with the [accompanying tutorial](docs/tutorials/kubecon/README.md)
-
-- Data from benchmarking experiments is made available on the [main project's Google drive](https://drive.google.com/drive/folders/1sqnibn_mFlciV3-qZIFgZYmk-p9zemzH)
-
-- `llm-d-benchmark` supports all available [Well-Lit Path Guides](https://github.com/llm-d/llm-d/blob/main/guides/README.md)
-```
-scenarios/guides/pd-disaggregation.sh
-scenarios/guides/inference-scheduling.sh
-scenarios/guides/tiered-prefix-cache.sh
-scenarios/guides/simulated-accelerators.sh
-scenarios/guides/wide-ep-lws.sh
-scenarios/guides/precise-prefix-cache-aware.sh
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 standup
 ```
 
-> [!WARNING]
-> `scenarios/guides/wide-ep-lws.sh` is still a work in progress, not fully functional
+Dry run (generates all YAML without touching the cluster):
 
-### Architecture
+```bash
+llmdbenchmark --spec specification/guides/inference-scheduling.yaml.j2 --dry-run standup
+```
 
-`llm-d-benchmark` stands up a stack (currently, both `llm-d` and "standalone" are supported) with a specific set of [Standup Parameters](docs/standup.md), and the run a specific harness with a specific set of [Run Parameters](docs/run.md). Results are saved in the native format of the [harness](docs/run.md#harnesses) chosen, as well as a universal [Benchmark Report](docs/benchmark_report.md).
+See [specification/README.md](specification/README.md) for the full list of available specifications and how to create your own.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)">
-    <img alt="llm-d Logo" src="./docs/images/architecture.drawio.png" width=100%>
-  </picture>
-</p>
+## Architecture
 
-### Goals
+The tool operates in two phases:
 
-#### [Reproducibility](docs/reproducibility.md)
+1. **Plan phase** -- Renders Jinja2 templates with scenario values into complete Kubernetes YAML manifests, Helm values files, and helmfile configurations.
+2. **Standup phase** -- Executes a sequence of numbered steps that apply those rendered manifests to a Kubernetes cluster.
 
-Each benchmark run collects enough information to enable the execution on different clusters/environments with minimal setup effort.
+```text
+specification.yaml.j2
+        |
+        v
+   [Plan Phase]           Jinja2 + scenario values + defaults
+        |
+        v
+  rendered stacks/        One directory per model stack with all YAMLs
+        |
+        v
+  [Standup Phase]          Steps 00-10 executed sequentially / per-stack
+        |
+        v
+  Running cluster          vLLM pods serving models, ready for benchmarks
+```
 
-#### [Flexibility](docs/flexibility.md)
+## Package Structure
 
-Multiple load generators and multiple load profiles available, in a plugable architecture that allows expansion.
+```text
+llmdbenchmark/
+    cli.py                    Entry point, workspace setup, command dispatch
+    config.py                 Plan-phase workspace configuration singleton
 
-#### Well defined set of [Metrics](docs/run.md#metrics)
+    interface/                CLI subcommand definitions (argparse)
+        commands.py           Command enum (plan, standup)
+        plan.py               Plan subcommand arguments
+        standup.py            Standup subcommand arguments
 
-Define and measure a representative set of metrics that allows not only meaningful comparisons between different stacks, but also performance characterization for different components.
+    parser/                   Plan-phase template rendering
+        render_specification.py   Specification file parsing and validation
+        render_plans.py           Jinja2 template rendering engine
+        render_result.py          Structured error tracking for renders
+        version_resolver.py       Auto-resolve image tags and chart versions
 
-#### Relevant collection of [Workloads](docs/run.md#workloads)
+    executor/                 Standup-phase execution framework
+        step.py               Step ABC, Phase enum, result dataclasses
+        step_executor.py      Step orchestrator (sequential + parallel)
+        command.py            kubectl/helm/helmfile subprocess wrapper
+        context.py            Shared state (ExecutionContext dataclass)
+        deps.py               System dependency checker
 
-Define a mix of workloads that express real-world use cases, allowing for `llm-d` performance characterization, evaluation, stress investigation.
+        steps/                Numbered step implementations
+            step_00  Validate dependencies, cluster connectivity, kubeconfig
+            step_01  Ensure local conda environment for analysis
+            step_02  Admin prerequisites (CRDs, gateway, LWS, namespaces)
+            step_03  Workload monitoring, node resource discovery
+            step_04  Model namespace (PVCs, secrets, download job)
+            step_05  Harness namespace (PVC, data access pod, preprocess)
+            step_06  Standalone vLLM deployment (Deployment + Service)
+            step_07  Helm repos and gateway infrastructure (helmfile)
+            step_08  GAIE inference extension deployment
+            step_09  Modelservice deployment (helmfile + LWS)
+            step_10  Smoketest (endpoint health, model serving validation)
 
-### Design and Roadmap
+    logging/                  Custom logger with emoji formatting
+    exceptions/               Error hierarchy (Template, Configuration, Execution)
+    utilities/
+        kubernetes.py         Kubernetes Python client helpers (connect, detect OpenShift)
+        os/
+            filesystem.py     Workspace and directory management
+            platform.py       Host OS detection and user identification
+```
 
-`llm-d-benchmark` follows the practice of its parent project (`llm-d`) by having also it is own [Northstar design](https://docs.google.com/document/d/1DtSEMRu3ann5M43TVB3vENPRoRkqBr_UiuwFnzit8mw/edit?tab=t.0#heading=h.9a3894cbydjw) (a work in progress)
+### Adding a New Step
 
-### Main concepts (identified by specific directories)
+1. Create `llmdbenchmark/executor/steps/step_NN_your_step.py`
+2. Subclass `Step`, set `number`, `name`, `phase`, and `per_stack`
+3. Implement `execute(context, stack_path)` returning a `StepResult`
+4. Optionally override `should_skip(context)` for conditional execution
+5. Register the step in `executor/steps/__init__.py`
 
-#### [Scenarios](docs/standup.md#scenarios)
+The `Step` base class provides shared helpers: `_load_plan_config()`, `_load_stack_config()`, `_find_rendered_yaml()`, and `_find_yaml()`.
 
-Pieces of information identifying a particular cluster. This information includes, but it is not limited to, GPU model, large language model, and `llm-d` parameters (an environment file, and optionally a `values.yaml` file for modelservice helm charts).
+### Deployment Methods
 
-#### [Harnesses](docs/run.md#harnesses)
+The standup phase supports two deployment paths:
 
-A "harness" is a load generator (Python code) which drives the benchmark load. Today, llm-d-benchmark supports [inference-perf](https://github.com/kubernetes-sigs/inference-perf), [guidellm](https://github.com/vllm-project/guidellm.git), the benchmarks found on the `benchmarks` folder on [vllm](https://github.com/vllm-project/vllm.git), [inferencemax](https://github.com/InferenceMAX/InferenceMAX.git) and "no op" (internally designed "nop") for users interested in benchmarking mostly model load times. There are ongoing efforts to consolidate and provide an easier way to support different load generators.
+- **standalone** -- Direct Kubernetes Deployments and Services for each model (steps 06)
+- **modelservice** -- Helm-based deployment with gateway infrastructure, GAIE, and LWS support (steps 07-09)
 
-#### (Workload) [Profiles](docs/run.md#profiles)
+Both paths share steps 00-05 (infrastructure, namespaces, secrets) and step 10 (smoketest).
 
-A (workload) profile is the actual benchmark load specification which includes the LLM use case to benchmark, traffic pattern, input / output distribution, and dataset. Supported workload profiles can be found under [`workload/profiles`](./workload/profiles).
+## Main Concepts
 
-> [!IMPORTANT]
-> The triplet `<scenario>`,`<harness>`,`<(workload) profile>`, combined with the standup/teardown capabilities provided by [llm-d-infra](https://github.com/llm-d-incubation/llm-d-infra.git) and [llm-d-modelservice](https://github.com/llm-d/llm-d-model-service.git) should provide enough information to allow a single experiment to be reproduced.
+### [Scenarios](docs/standup.md#scenarios)
 
-#### [Experiments](docs/doe.md)
-A file describing a series of parameters - both `standup` and `run` - to be executed automatically. This file follows the "Design of Experiments" (DOE) approach, where each parameter (`factor`) is listed alongside with the target values (`levels`) resulting into a list of combinations (`treatments`).
+Cluster-specific configuration: GPU model, LLM, and `llm-d` parameters.
 
-#### [Configuration Exploration](config_explorer/README.md)
-The configuration explorer is a library that helps find the most cost-effective, optimal configuration for serving models on llm-d based on hardware specification, workload characteristics, and SLO requirements. A "Capacity Planner" is provided as an initial component to help determine if vLLM configuration is feasible for deployment.
+### [Harnesses](docs/run.md#harnesses)
 
-### Dependencies
+Load generators that drive benchmark traffic. Supported: [inference-perf](https://github.com/kubernetes-sigs/inference-perf), [guidellm](https://github.com/vllm-project/guidellm.git), [vllm benchmarks](https://github.com/vllm-project/vllm.git), [inferencemax](https://github.com/InferenceMAX/InferenceMAX.git), and nop (for model load time benchmarking).
+
+### (Workload) [Profiles](docs/run.md#profiles)
+
+Benchmark load specifications including LLM use case, traffic pattern, input/output distribution, and dataset. Found under [`workload/profiles`](./workload/profiles).
+
+### [Experiments](docs/doe.md)
+
+Design of Experiments (DOE) files describing parameter sweeps across standup and run configurations.
+
+## Dependencies
 
 - [llm-d-infra](https://github.com/llm-d-incubation/llm-d-infra.git)
 - [llm-d-modelservice](https://github.com/llm-d/llm-d-model-service.git)
 - [inference-perf](https://github.com/kubernetes-sigs/inference-perf)
-- [guidellm](https://github.com/vllm-project/guidellm.git)
-- [vllm](https://github.com/vllm-project/vllm.git)
-- [inferencemax](https://github.com/InferenceMAX/InferenceMAX.git)
 
 ## Topics
 
-#### [Reproducibility](docs/reproducibility.md)
-#### [Observability](docs/observability.md)
-#### [Quickstart](docs/quickstart.md)
-#### [Resource Requirements](docs/resource_requirements.md)
-#### [FAQ](docs/faq.md)
+- [Reproducibility](docs/reproducibility.md)
+- [Observability](docs/observability.md)
+- [Quickstart](docs/quickstart.md)
+- [Resource Requirements](docs/resource_requirements.md)
+- [FAQ](docs/faq.md)
 
 ## Contribute
 
-- [Instructions on how to contribute](CONTRIBUTING.md) including details on our development process and governance.
-- We use Slack to discuss development across organizations. Please join: [Slack](https://llm-d.ai/slack). There is a `sig-benchmarking` channel there.
-- We host a bi-weekly standup for contributors on Tuesdays at 13:00 EST. Please join: [Meeting Details](https://calendar.google.com/calendar/u/0?cid=NzA4ZWNlZDY0NDBjYjBkYzA3NjdlZTNhZTk2NWQ2ZTc1Y2U5NTZlMzA5MzhmYTAyZmQ3ZmU1MDJjMDBhNTRiNEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t). The meeting notes can be found [here](https://docs.google.com/document/d/1njjeyBJF6o69FlyadVbuXHxQRBGDLcIuT7JHJU3T_og/edit?usp=sharing). Joining the [llm-d google groups](https://groups.google.com/g/llm-d-contributors) will grant you access.
+- [How to contribute](CONTRIBUTING.md), including development process and governance.
+- Join [Slack](https://llm-d.ai/slack) (`sig-benchmarking` channel) for cross-org development discussion.
+- Bi-weekly contributor standup: Tuesdays 13:00 EST. [Calendar](https://calendar.google.com/calendar/u/0?cid=NzA4ZWNlZDY0NDBjYjBkYzA3NjdlZTNhZTk2NWQ2ZTc1Y2U5NTZlMzA5MzhmYTAyZmQ3ZmU1MDJjMDBhNTRiNEBncm91cC5jYWxlbmRhci5nb29nbGUuY29t) | [Meeting notes](https://docs.google.com/document/d/1njjeyBJF6o69FlyadVbuXHxQRBGDLcIuT7JHJU3T_og/edit?usp=sharing) | [Google group](https://groups.google.com/g/llm-d-contributors)
 
 ## License
 
-This project is licensed under Apache License 2.0. See the [LICENSE file](LICENSE) for details.
+Licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.

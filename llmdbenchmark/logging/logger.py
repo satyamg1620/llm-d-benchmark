@@ -80,7 +80,11 @@ class LLMDBenchmarkLogger:
     _shared_stderr_handler: FileHandler | None = None
     _shared_log_dir: Path | None = None
 
+    # Indent prefix for sub-step messages (thin vertical bar)
+    INDENT_PREFIX = "    │ "
+
     def __init__(self, log_dir: Path, log_name: str, verbose: bool = False):
+        self._indent_level = 0
         short_uuid = uuid.uuid4().hex[:4]
         log_name_with_uuid = f"{log_name}-{short_uuid}"
         self.logger = logging.getLogger(f"{__package_name__}-{log_name_with_uuid}")
@@ -164,6 +168,24 @@ class LLMDBenchmarkLogger:
                 context={"log_dir": str(log_dir), "error": str(e)},
             ) from e
 
+    def set_indent(self, level: int) -> None:
+        """
+        Set the indentation level for subsequent log messages.
+
+        Used by StepExecutor to visually nest sub-step messages under
+        the step header.
+
+        Args:
+            level: Indentation level (0 = no indent, 1+ = nested).
+        """
+        self._indent_level = max(0, level)
+
+    def _apply_indent(self, msg: str) -> str:
+        """Prepend indent prefix if indent level is set."""
+        if self._indent_level > 0:
+            return self.INDENT_PREFIX * self._indent_level + msg
+        return msg
+
     def log_debug(self, msg, emoji=None):
         """
         Log a debug message.
@@ -172,7 +194,7 @@ class LLMDBenchmarkLogger:
             msg: The message to log.
             emoji: Optional custom emoji to override the default 🔍.
         """
-        self.logger.debug(msg, extra={"emoji": emoji} if emoji else {})
+        self.logger.debug(self._apply_indent(msg), extra={"emoji": emoji} if emoji else {})
 
     def log_info(self, msg, emoji=None):
         """
@@ -182,7 +204,7 @@ class LLMDBenchmarkLogger:
             msg: The message to log.
             emoji: Optional custom emoji to override the default ℹ️.
         """
-        self.logger.info(msg, extra={"emoji": emoji} if emoji else {})
+        self.logger.info(self._apply_indent(msg), extra={"emoji": emoji} if emoji else {})
 
     def log_warning(self, msg, emoji=None):
         """
@@ -192,7 +214,7 @@ class LLMDBenchmarkLogger:
             msg: The message to log.
             emoji: Optional custom emoji to override the default ⚠️.
         """
-        self.logger.warning(msg, extra={"emoji": emoji} if emoji else {})
+        self.logger.warning(self._apply_indent(msg), extra={"emoji": emoji} if emoji else {})
 
     def log_error(self, msg, emoji=None, exc_info=False):
         """
@@ -205,7 +227,7 @@ class LLMDBenchmarkLogger:
                       (not console to make logs clean).
         """
         self.logger.error(
-            msg, extra={"emoji": emoji} if emoji else {}, exc_info=exc_info
+            self._apply_indent(msg), extra={"emoji": emoji} if emoji else {}, exc_info=exc_info
         )
 
     def line_break(self) -> None:

@@ -2,12 +2,12 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: download-model
-  namespace: {{ gateway.namespace }}
+  namespace: {{ namespace.name }}
 spec:
   backoffLimit: {{ downloadJob.backoffLimit }}
   template:
     metadata:
-      namespace: {{ gateway.namespace }}
+      namespace: {{ namespace.name }}
       labels:
         app: {{ labels.app }}
     spec:

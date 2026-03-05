@@ -11,6 +11,7 @@ This module handles:
 - Tracking errors at both global and per-stack levels using the RenderResult and StackErrors dataclasses.
 """
 
+import base64
 from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Any
@@ -57,6 +58,9 @@ class RenderPlans:
     # Prefix for partial/macro files (not rendered directly)
     PARTIAL_PREFIX = "_"
 
+    # Default namespace when "auto" is specified (matches original bash: llmdbench)
+    DEFAULT_NAMESPACE = "llmdbench"
+
     def __init__(
         self,
         template_dir: Path,
@@ -64,11 +68,15 @@ class RenderPlans:
         scenarios_file: Path,
         output_dir: Path,
         logger=None,
+        version_resolver=None,
+        cli_namespace: str | None = None,
     ):
         self.template_dir = Path(template_dir)
         self.defaults_file = Path(defaults_file)
         self.scenarios_file = Path(scenarios_file)
         self.output_dir = Path(output_dir)
+        self.version_resolver = version_resolver
+        self.cli_namespace = cli_namespace
 
         self.logger = logger or get_logger(
             config.log_dir, verbose=config.verbose, log_name=__name__
@@ -97,6 +105,8 @@ class RenderPlans:
         env.filters["toyaml"] = self._toyaml_filter
         env.filters["is_empty"] = self._is_empty_filter
         env.filters["default_if_empty"] = self._default_if_empty_filter
+        env.filters["b64pad"] = self._b64pad_filter
+        env.filters["b64encode"] = self._b64encode_filter
 
         self._jinja_env = env
         return env
@@ -157,6 +167,33 @@ class RenderPlans:
         if RenderPlans._is_empty_filter(value):
             return default_value
         return value
+
+    @staticmethod
+    def _b64pad_filter(value: str) -> str:
+        """Ensure a base64 string has proper padding.
+
+        Base64 strings must have length divisible by 4. If not,
+        append '=' characters to reach the next multiple of 4.
+        This fixes 'illegal base64 data' errors from Kubernetes.
+        """
+        if not value or not isinstance(value, str):
+            return value
+        value = value.strip()
+        # Add padding to make length a multiple of 4
+        remainder = len(value) % 4
+        if remainder:
+            value += "=" * (4 - remainder)
+        return value
+
+    @staticmethod
+    def _b64encode_filter(value: str) -> str:
+        """Base64-encode a plain-text string.
+
+        Useful for creating Kubernetes Secret data fields from plain text.
+        """
+        if not value or not isinstance(value, str):
+            return value
+        return base64.b64encode(value.encode("utf-8")).decode("utf-8")
 
     def _load_yaml(self, yaml_file: Path) -> dict:
         """
@@ -238,6 +275,86 @@ class RenderPlans:
                 )
 
         self.logger.log_info(f"Applied resource preset: {preset_name}")
+        return result
+
+    def _resolve_namespace(self, values: dict) -> dict:
+        """
+        Resolve the namespace configuration.
+
+        Handles:
+        - CLI --namespace override (comma-separated: deploy,harness,wva)
+        - "auto" → resolves to DEFAULT_NAMESPACE ("llmdbench")
+        - Propagates namespace to harnessNamespace/wvaNamespace if not set
+
+        Matches original bash behavior from standup.sh:
+            -p|--namespace) deploy_ns,harness_ns,wva_ns
+            If harness_ns empty → use deploy_ns
+            If wva_ns empty → use deploy_ns
+
+        Args:
+            values: Merged values dictionary
+
+        Returns:
+            Values with resolved namespace configuration
+        """
+        result = deepcopy(values)
+        ns_config = result.get("namespace", {})
+        current_name = ns_config.get("name", "auto")
+
+        if self.cli_namespace:
+            # Parse comma-separated namespace: deploy,harness,wva
+            parts = [p.strip() for p in self.cli_namespace.split(",")]
+            deploy_ns = parts[0] if parts else current_name
+            harness_ns = parts[1] if len(parts) > 1 and parts[1] else deploy_ns
+            wva_ns = parts[2] if len(parts) > 2 and parts[2] else deploy_ns
+
+            # Resolve "auto" within CLI values
+            if deploy_ns == "auto":
+                deploy_ns = self.DEFAULT_NAMESPACE
+            if harness_ns == "auto":
+                harness_ns = deploy_ns
+            if wva_ns == "auto":
+                wva_ns = deploy_ns
+
+            ns_config["name"] = deploy_ns
+            result["namespace"] = ns_config
+
+            # Sync gateway.namespace with the deploy namespace
+            # In the original bash, LLMDBENCH_VLLM_COMMON_NAMESPACE is used
+            # for both the K8s namespace and gateway/helmfile deployments.
+            gw_config = result.get("gateway", {})
+            if gw_config.get("namespace") in ("auto", self.DEFAULT_NAMESPACE, ""):
+                gw_config["namespace"] = deploy_ns
+                result["gateway"] = gw_config
+
+            # Set harness and WVA namespaces
+            harness_config = result.get("harness", {})
+            harness_config["namespace"] = harness_ns
+            result["harness"] = harness_config
+
+            wva_config = result.get("wva", {})
+            wva_config["namespace"] = wva_ns
+            result["wva"] = wva_config
+
+            self.logger.log_info(
+                f"Namespace from CLI: deploy={deploy_ns}, "
+                f"harness={harness_ns}, wva={wva_ns}"
+            )
+        elif current_name == "auto":
+            # Resolve "auto" to default namespace
+            ns_config["name"] = self.DEFAULT_NAMESPACE
+            result["namespace"] = ns_config
+
+            # Sync gateway.namespace if it's also "auto" or the old default
+            gw_config = result.get("gateway", {})
+            if gw_config.get("namespace") in ("auto", self.DEFAULT_NAMESPACE, ""):
+                gw_config["namespace"] = self.DEFAULT_NAMESPACE
+                result["gateway"] = gw_config
+
+            self.logger.log_info(
+                f'Namespace "auto" resolved to "{self.DEFAULT_NAMESPACE}"'
+            )
+
         return result
 
     def _load_templates(self) -> list[dict]:
@@ -380,6 +497,18 @@ class RenderPlans:
         # Apply resource preset if specified
         merged_values = self._apply_resource_preset(merged_values)
 
+        # Resolve 'auto' version strings to concrete values
+        if self.version_resolver:
+            try:
+                merged_values = self.version_resolver.resolve_all(merged_values)
+            except Exception as e:
+                self.logger.log_warning(
+                    f"Version resolution had issues for stack {stack_name}: {e}"
+                )
+
+        # Resolve namespace
+        merged_values = self._resolve_namespace(merged_values)
+
         # Create output directory
         stack_output_dir = base_path / stack_name
         stack_output_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +542,14 @@ class RenderPlans:
                 self.logger.log_error(f"Error rendering {filename}: {e}")
                 stack_errors.render_errors.append(msg)
                 error_count += 1
+
+        # Write the merged config for use by executor steps
+        config_output = stack_output_dir / "config.yaml"
+        try:
+            with open(config_output, "w", encoding="utf-8") as f:
+                yaml.dump(merged_values, f, default_flow_style=False, allow_unicode=True)
+        except Exception as e:
+            self.logger.log_warning(f"Failed to write config.yaml: {e}")
 
         # Validate rendered YAML
         yaml_errors = self._validate_yaml_files(stack_output_dir)

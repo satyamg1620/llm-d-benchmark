@@ -29,12 +29,14 @@
 {% set preprocess_script = vllmCommon.preprocessScript -%}
 {% endif -%}
 
-{# Pre-calculate which optional flags are enabled TODO Seperate into confg. #}
-{% set has_enforce_eager = vllmCommon.flags.enforceEager -%}
-{% set has_disable_log_requests = vllmCommon.flags.disableLogRequests -%}
-{% set has_disable_uvicorn = vllmCommon.flags.disableUvicornAccessLog -%}
+{# Pre-calculate which optional flags are enabled #}
+{% set has_enforce_eager = vllmCommon.flags.enforceEager | default(false) -%}
+{% set has_disable_log_requests = vllmCommon.flags.disableLogRequests | default(false) -%}
+{% set has_disable_uvicorn = vllmCommon.flags.disableUvicornAccessLog | default(false) -%}
+{% set has_no_prefix_caching = vllmCommon.flags.noPrefixCaching | default(false) -%}
 {% set has_kv_transfer = vllmCommon.kvTransfer is defined and vllmCommon.kvTransfer.enabled -%}
 {% set has_kv_events = vllmCommon.kvEvents is defined and vllmCommon.kvEvents.enabled -%}
+{% set gpu_mem_util = model.gpuMemoryUtilization | default(0) | float -%}
 
 {# Custom command provided #}
 {% if config.vllm.customCommand is defined and config.vllm.customCommand is not none -%}
@@ -47,14 +49,18 @@
 {%- endif %}
 {%- else -%}
 {# Use default vllm serve command #}
+{% set effective_max_model_len = vllmCommon.maxModelLen | default(model.maxModelLen) -%}
+{% set effective_block_size = vllmCommon.blockSize | default(model.blockSize) -%}
 {{ preprocess_script }}; vllm serve {{ model.cacheBase }}/{{ model.path }} \
   --host {{ vllmCommon.host }} \
   --served-model-name {{ model.name }} \
   --port {{ config.vllm.port }} \
-  --block-size {{ model.blockSize }} \
-  --max-model-len {{ model.maxModelLen }} \
-  --tensor-parallel-size {{ config.parallelism.tensor }} \
+  --block-size {{ effective_block_size }} \
+  --max-model-len {{ effective_max_model_len }} \
+  --tensor-parallel-size {{ config.parallelism.tensor }}
+{%- if gpu_mem_util > 0 %} \
   --gpu-memory-utilization {{ model.gpuMemoryUtilization }}
+{%- endif %}
 {%- if has_enforce_eager %} \
   --enforce-eager
 {%- endif %}
@@ -64,11 +70,19 @@
 {%- if has_disable_uvicorn %} \
   --disable-uvicorn-access-log
 {%- endif %}
+{%- if has_no_prefix_caching %} \
+  --no-enable-prefix-caching
+{%- endif %}
 {%- if has_kv_transfer %} \
   --kv-transfer-config "{{ build_kv_transfer_config() }}"
 {%- endif %}
 {%- if has_kv_events %} \
   --kv-events-config "{{ build_kv_events_config() }}"
+{%- endif %}
+{%- if config.vllm.additionalFlags is defined %}
+{% for flag in config.vllm.additionalFlags %} \
+  {{ flag }}
+{%- endfor %}
 {%- endif %}
 {%- endif %}
 {%- endmacro %}
@@ -79,6 +93,8 @@
 {# Determine preprocess script to use #}
 {% if standalone.vllm.customPreprocessCommand is defined and standalone.vllm.customPreprocessCommand is not none -%}
 {% set preprocess_script = standalone.vllm.customPreprocessCommand -%}
+{% elif vllmCommon.preprocessScript is defined -%}
+{% set preprocess_script = vllmCommon.preprocessScript -%}
 {% else -%}
 {% set preprocess_script = standalone.vllm.preprocessCommand | default('/bin/true') -%}
 {% endif -%}
@@ -86,6 +102,7 @@
 {# Pre-calculate which optional flags are enabled #}
 {% set has_kv_transfer = vllmCommon.kvTransfer is defined and vllmCommon.kvTransfer.enabled -%}
 {% set has_kv_events = vllmCommon.kvEvents is defined and vllmCommon.kvEvents.enabled -%}
+{% set gpu_mem_util = model.gpuMemoryUtilization | default(0) | float -%}
 
 {# Custom command provided #}
 {% if standalone.vllm.customCommand is defined and standalone.vllm.customCommand is not none -%}
@@ -98,13 +115,16 @@
 {%- endif %}
 {%- else -%}
 {# Use default vllm serve command #}
+{% set effective_max_model_len = vllmCommon.maxModelLen | default(model.maxModelLen) -%}
 {{ preprocess_script }}; vllm serve {{ model.name }} \
   --no-enable-prefix-caching \
   --load-format {{ standalone.vllm.loadFormat | default('auto') }} \
   --port {{ standalone.vllm.port | default(8000) }} \
-  --max-model-len {{ model.maxModelLen }} \
-  --disable-log-requests \
-  --gpu-memory-utilization {{ model.gpuMemoryUtilization }} \
+  --max-model-len {{ effective_max_model_len }} \
+  --disable-log-requests
+{%- if gpu_mem_util > 0 %} \
+  --gpu-memory-utilization {{ model.gpuMemoryUtilization }}
+{%- endif %} \
   --tensor-parallel-size {{ standalone.parallelism.tensor | default(decode.parallelism.tensor) }} \
   --model-loader-extra-config "$LLMDBENCH_VLLM_COMMON_MODEL_LOADER_EXTRA_CONFIG"
 {%- if has_kv_transfer %} \
@@ -113,96 +133,10 @@
 {%- if has_kv_events %} \
   --kv-events-config "{{ build_kv_events_config() }}"
 {%- endif %}
+{%- if standalone.vllm.additionalFlags is defined %}
+{% for flag in standalone.vllm.additionalFlags %} \
+  {{ flag }}
+{%- endfor %}
 {%- endif %}
-{%- endmacro %}
-
-
-{# Macro to render volume mounts #}
-{% macro render_volume_mounts(mode='decode') -%}
-{% if mode == 'decode' -%}
-{% set config = decode -%}
-{% else -%}
-{% set config = prefill -%}
-{% endif -%}
-{% for mount in vllmCommon.volumeMounts -%}
-    - name: {{ mount.name }}
-      mountPath: {{ mount.mountPath }}
-{% endfor -%}
-{% for mount in config.additionalVolumeMounts -%}
-    - name: {{ mount.name }}
-      mountPath: {{ mount.mountPath }}
-{% if mount.subPath is defined -%}
-      subPath: {{ mount.subPath }}
-{% endif -%}
-{% if mount.readOnly is defined -%}
-      readOnly: {{ mount.readOnly | lower }}
-{% endif -%}
-{% endfor -%}
-{%- endmacro %}
-
-{# Macro to render volumes #}
-{% macro render_volumes(mode='decode') -%}
-{% if mode == 'decode' -%}
-{% set config = decode -%}
-{% else -%}
-{% set config = prefill -%}
-{% endif -%}
-{% for volume in vllmCommon.volumes -%}
-  - name: {{ volume.name }}
-{% if volume.type == 'configMap' -%}
-    configMap:
-{% if volume.configMap.name is defined -%}
-      name: {{ volume.configMap.name }}
-{% endif -%}
-{% if volume.configMap.defaultMode is defined -%}
-      defaultMode: {{ volume.configMap.defaultMode }}
-{% endif -%}
-{% elif volume.type == 'emptyDir' -%}
-    emptyDir:
-{% if volume.emptyDir.medium is defined -%}
-      medium: {{ volume.emptyDir.medium }}
-{% endif -%}
-{% if volume.emptyDir.sizeLimit is defined -%}
-      sizeLimit: {{ volume.emptyDir.sizeLimit }}
-{% endif -%}
-{% elif volume.type == 'persistentVolumeClaim' -%}
-    persistentVolumeClaim:
-      claimName: {{ volume.persistentVolumeClaim.claimName }}
-{% elif volume.type == 'secret' -%}
-    secret:
-      secretName: {{ volume.secret.secretName }}
-{% if volume.secret.defaultMode is defined -%}
-      defaultMode: {{ volume.secret.defaultMode }}
-{% endif -%}
-{% endif -%}
-{% endfor -%}
-{% for volume in config.additionalVolumes -%}
-  - name: {{ volume.name }}
-{% if volume.type == 'configMap' -%}
-    configMap:
-{% if volume.configMap.name is defined -%}
-      name: {{ volume.configMap.name }}
-{% endif -%}
-{% if volume.configMap.defaultMode is defined -%}
-      defaultMode: {{ volume.configMap.defaultMode }}
-{% endif -%}
-{% elif volume.type == 'emptyDir' -%}
-    emptyDir:
-{% if volume.emptyDir.medium is defined -%}
-      medium: {{ volume.emptyDir.medium }}
-{% endif -%}
-{% if volume.emptyDir.sizeLimit is defined -%}
-      sizeLimit: {{ volume.emptyDir.sizeLimit }}
-{% endif -%}
-{% elif volume.type == 'persistentVolumeClaim' -%}
-    persistentVolumeClaim:
-      claimName: {{ volume.persistentVolumeClaim.claimName }}
-{% elif volume.type == 'secret' -%}
-    secret:
-      secretName: {{ volume.secret.secretName }}
-{% if volume.secret.defaultMode is defined -%}
-      defaultMode: {{ volume.secret.defaultMode }}
-{% endif -%}
-{% endif -%}
-{% endfor -%}
+{%- endif %}
 {%- endmacro %}

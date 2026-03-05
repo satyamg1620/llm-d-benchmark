@@ -40,7 +40,11 @@ schedulerName: default-scheduler
 {# -------------------------------------------------------------------------- #}
 modelArtifacts:
   name: {{ model.name }}
+{% if modelservice is defined and modelservice.uriProtocol is defined and modelservice.uriProtocol == 'hf' %}
+  uri: hf://{{ model.huggingfaceId | default(model.name) }}
+{% else %}
   uri: pvc://{{ storage.modelPvc.name }}/{{ model.path }}
+{% endif %}
   size: {{ model.size }}
 {% if huggingface.secretName is defined and huggingface.secretName %}
   authSecretName: "{{ huggingface.secretName }}"
@@ -72,7 +76,11 @@ multinode: false
 {# ACCELERATOR CONFIGURATION                                                  #}
 {# -------------------------------------------------------------------------- #}
 accelerator:
+{% if accelerator.count is defined and accelerator.count | int == 0 %}
+  type: cpu
+{% else %}
   type: {{ accelerator.type | default('nvidia') }}
+{% endif %}
 {% if accelerator.resources is defined %}
   resources:
 {{ accelerator.resources | toyaml | indent(4) }}
@@ -83,17 +91,51 @@ accelerator:
 {% endif %}
 
 {# -------------------------------------------------------------------------- #}
-{# DYNAMIC RESOURCE ALLOCATION (DRA)                                          #}
+{# ACCELERATOR DRA (Dynamic Resource Allocation)                              #}
 {# -------------------------------------------------------------------------- #}
-{% if dra is defined and dra.enabled is defined %}
-dra:
-  enabled: {{ dra.enabled | lower }}
-{% if dra.type is defined %}
-  type: {{ dra.type }}
+{% if accelerator.dra is defined %}
+  dra: {{ accelerator.dra | lower }}
 {% endif %}
-{% if dra.claimTemplates is defined %}
-  claimTemplates:
-{{ dra.claimTemplates | toyaml | indent(4) }}
+{% if accelerator.resourceClaimTemplates is defined %}
+  resourceClaimTemplates:
+{{ accelerator.resourceClaimTemplates | toyaml | indent(4) }}
+{% endif %}
+
+{# -------------------------------------------------------------------------- #}
+{# TRACING (OpenTelemetry)                                                    #}
+{# -------------------------------------------------------------------------- #}
+{% if tracing is defined and tracing.enabled is defined %}
+tracing:
+  enabled: {{ tracing.enabled | lower }}
+{% if tracing.otlpEndpoint is defined %}
+  otlpEndpoint: "{{ tracing.otlpEndpoint }}"
+{% endif %}
+{% if tracing.sampling is defined %}
+  sampling:
+{% if tracing.sampling.sampler is defined %}
+    sampler: "{{ tracing.sampling.sampler }}"
+{% endif %}
+{% if tracing.sampling.samplerArg is defined %}
+    samplerArg: "{{ tracing.sampling.samplerArg }}"
+{% endif %}
+{% endif %}
+{% if tracing.serviceNames is defined %}
+  serviceNames:
+{% if tracing.serviceNames.vllmDecode is defined %}
+    vllmDecode: "{{ tracing.serviceNames.vllmDecode }}"
+{% endif %}
+{% if tracing.serviceNames.vllmPrefill is defined %}
+    vllmPrefill: "{{ tracing.serviceNames.vllmPrefill }}"
+{% endif %}
+{% if tracing.serviceNames.routingProxy is defined %}
+    routingProxy: "{{ tracing.serviceNames.routingProxy }}"
+{% endif %}
+{% endif %}
+{% if tracing.vllm is defined %}
+  vllm:
+{% if tracing.vllm.collectDetailedTraces is defined %}
+    collectDetailedTraces: "{{ tracing.vllm.collectDetailedTraces }}"
+{% endif %}
 {% endif %}
 {% endif %}
 
@@ -202,6 +244,11 @@ decode:
   schedulerName: {{ decode.schedulerName }}
 {% endif %}
 
+{% if decode.priorityClassName is defined and decode.priorityClassName %}
+  priorityClassName: {{ decode.priorityClassName }}
+{% endif %}
+
+{% if (decode.parallelism.tensor | default(0) | int) > 0 %}
   acceleratorTypes:
     labelKey: {{ decode.acceleratorType.labelKey }}
     labelValues:
@@ -211,6 +258,7 @@ decode:
 {% endfor %}
 {% elif decode.acceleratorType.labelValue is defined %}
     - {{ decode.acceleratorType.labelValue }}
+{% endif %}
 {% endif %}
 
   parallelism:
@@ -257,6 +305,31 @@ decode:
 {% endfor %}
 {% endif %}
 
+{% if decode.tolerations is defined and decode.tolerations %}
+  tolerations:
+{{ decode.tolerations | toyaml | indent(4) }}
+{% endif %}
+
+{% if decode.accelerator is defined %}
+  accelerator:
+{% if decode.accelerator.type is defined %}
+    type: {{ decode.accelerator.type }}
+{% endif %}
+{% if decode.accelerator.dra is defined %}
+    dra: {{ decode.accelerator.dra | lower }}
+{% endif %}
+{% endif %}
+
+{% if decode.resourceClaims is defined and decode.resourceClaims %}
+  resourceClaims:
+{{ decode.resourceClaims | toyaml | indent(4) }}
+{% endif %}
+
+{% if decode.podSecurityContext is defined and decode.podSecurityContext %}
+  podSecurityContext:
+{{ decode.podSecurityContext | toyaml | indent(4) }}
+{% endif %}
+
 {# LWS / Multinode specific options #}
 {% if decode.hostIPC is defined %}
   hostIPC: {{ decode.hostIPC | lower }}
@@ -292,13 +365,16 @@ decode:
     imagePullPolicy: {{ decode.vllm.imagePullPolicy }}
 {% endif %}
     mountModelVolume: {{ decode.mountModelVolume | default(true) | lower }}
-    modelCommand: custom
+{% set decode_model_command = decode.vllm.modelCommand | default('custom') %}
+    modelCommand: {{ decode_model_command }}
+{% if decode_model_command != 'imageDefault' %}
     command:
       - /bin/sh
       - '-c'
     args:
       - |
 {{ build_vllm_command('decode') | indent(8, first=True) }}
+{% endif %}
     env:
       - name: VLLM_NIXL_SIDE_CHANNEL_HOST
         valueFrom:
@@ -386,7 +462,7 @@ decode:
 {% set _ = extra_config_without_ports.update({k: v}) %}
 {% endfor %}
 {% if extra_config_without_ports %}
-{{ extra_config_without_ports | toyaml | indent(6) }}
+{{ extra_config_without_ports | toyaml | indent(6, true) }}
 {% endif %}
 {% endif %}
     volumeMounts:
@@ -543,6 +619,11 @@ prefill:
   schedulerName: {{ prefill.schedulerName }}
 {% endif %}
 
+{% if prefill.priorityClassName is defined and prefill.priorityClassName %}
+  priorityClassName: {{ prefill.priorityClassName }}
+{% endif %}
+
+{% if (prefill.parallelism.tensor | default(0) | int) > 0 %}
   acceleratorTypes:
     labelKey: {{ prefill.acceleratorType.labelKey }}
     labelValues:
@@ -552,6 +633,7 @@ prefill:
 {% endfor %}
 {% elif prefill.acceleratorType.labelValue is defined %}
     - {{ prefill.acceleratorType.labelValue }}
+{% endif %}
 {% endif %}
 
   parallelism:
@@ -598,6 +680,31 @@ prefill:
 {% endfor %}
 {% endif %}
 
+{% if prefill.tolerations is defined and prefill.tolerations %}
+  tolerations:
+{{ prefill.tolerations | toyaml | indent(4) }}
+{% endif %}
+
+{% if prefill.accelerator is defined %}
+  accelerator:
+{% if prefill.accelerator.type is defined %}
+    type: {{ prefill.accelerator.type }}
+{% endif %}
+{% if prefill.accelerator.dra is defined %}
+    dra: {{ prefill.accelerator.dra | lower }}
+{% endif %}
+{% endif %}
+
+{% if prefill.resourceClaims is defined and prefill.resourceClaims %}
+  resourceClaims:
+{{ prefill.resourceClaims | toyaml | indent(4) }}
+{% endif %}
+
+{% if prefill.podSecurityContext is defined and prefill.podSecurityContext %}
+  podSecurityContext:
+{{ prefill.podSecurityContext | toyaml | indent(4) }}
+{% endif %}
+
 {# LWS / Multinode specific options #}
 {% if prefill.hostIPC is defined %}
   hostIPC: {{ prefill.hostIPC | lower }}
@@ -633,10 +740,16 @@ prefill:
     imagePullPolicy: {{ prefill.vllm.imagePullPolicy }}
 {% endif %}
     mountModelVolume: {{ prefill.mountModelVolume | default(true) | lower }}
-    modelCommand: vllmServe
+{% set prefill_model_command = prefill.vllm.modelCommand | default('custom') %}
+    modelCommand: {{ prefill_model_command }}
+{% if prefill_model_command != 'imageDefault' %}
+    command:
+      - /bin/sh
+      - '-c'
     args:
       - |
 {{ build_vllm_command('prefill') | indent(8, first=True) }}
+{% endif %}
     env:
       - name: VLLM_IS_PREFILL
         value: "1"
@@ -726,7 +839,7 @@ prefill:
 {% set _ = extra_config_without_ports.update({k: v}) %}
 {% endfor %}
 {% if extra_config_without_ports %}
-{{ extra_config_without_ports | toyaml | indent(6) }}
+{{ extra_config_without_ports | toyaml | indent(6, true) }}
 {% endif %}
 {% endif %}
     volumeMounts:

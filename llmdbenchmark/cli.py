@@ -37,6 +37,11 @@ from llmdbenchmark.interface import plan, standup
 from llmdbenchmark.parser.render_specification import RenderSpecification
 from llmdbenchmark.exceptions.exceptions import TemplateError
 from llmdbenchmark.parser.render_plans import RenderPlans
+from llmdbenchmark.parser.version_resolver import VersionResolver
+from llmdbenchmark.executor.step import Phase
+from llmdbenchmark.executor.context import ExecutionContext
+from llmdbenchmark.executor.step_executor import StepExecutor
+from llmdbenchmark.executor.steps import get_standup_steps
 
 
 def setup_workspace(
@@ -76,7 +81,6 @@ def dispatch_cli(args: argparse.Namespace, logger: logging.Logger) -> None:
     if args.command in (
         Command.PLAN.value,
         Command.STANDUP.value,
-        Command.END_TO_END.value,
     ):
 
         #
@@ -97,11 +101,18 @@ def dispatch_cli(args: argparse.Namespace, logger: logging.Logger) -> None:
             "Using specification file to fully render templates into complete system stack plans."
         )
 
+        # Create version resolver for auto-version resolution during planning
+        version_resolver = VersionResolver(
+            logger=logger, dry_run=args.dry_run
+        )
+
         render_plan_errors = RenderPlans(
             template_dir=specification_as_dict["template_dir"]["path"],
             defaults_file=specification_as_dict["values_file"]["path"],
             scenarios_file=specification_as_dict["scenario_file"]["path"],
             output_dir=config.plan_dir,
+            version_resolver=version_resolver,
+            cli_namespace=getattr(args, "namespace", None),
         ).eval()
 
         try:
@@ -115,11 +126,47 @@ def dispatch_cli(args: argparse.Namespace, logger: logging.Logger) -> None:
             logger.log_error(f"Rendering failed: {e}")
             sys.exit(1)
 
-    if args.command in (Command.STANDUP.value, Command.END_TO_END.value):
-        logger.log_info("STANDUP TODO")
+    if args.command == Command.STANDUP.value:
+        _execute_standup(args, logger, render_plan_errors)
 
-    if args.command == Command.RUN.value:
-        logger.log_info("RUN TODO")
+
+def _execute_standup(args, logger, render_plan_errors):
+    """Build execution context and run standup steps."""
+    methods_str = getattr(args, "methods", None)
+    if methods_str:
+        deployed_methods = [m.strip() for m in methods_str.split(",")]
+    else:
+        deployed_methods = ["modelservice"]
+
+    context = ExecutionContext(
+        plan_dir=config.plan_dir,
+        workspace=config.workspace,
+        rendered_stacks=getattr(render_plan_errors, "rendered_paths", []),
+        dry_run=config.dry_run,
+        verbose=config.verbose,
+        non_admin=getattr(args, "non_admin", False),
+        current_phase=Phase.STANDUP,
+        kubeconfig=getattr(args, "kubeconfig", None),
+        deployed_methods=deployed_methods,
+        logger=logger,
+    )
+
+    executor = StepExecutor(
+        steps=get_standup_steps(),
+        context=context,
+        logger=logger,
+        max_parallel_stacks=getattr(args, "parallel", 4),
+    )
+
+    step_spec = getattr(args, "step", None)
+    result = executor.execute(step_spec=step_spec)
+
+    if result.has_errors:
+        logger.log_error(f"Standup failed:\n{result.summary()}")
+        sys.exit(1)
+
+    logger.line_break()
+    logger.log_info("All standup steps complete.", emoji="✅")
 
 
 def cli() -> None:

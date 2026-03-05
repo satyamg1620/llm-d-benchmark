@@ -41,7 +41,7 @@ _anchors:
   
   # Common vLLM settings
   block_size: &block_size 64
-  max_model_len: &max_model_len 16000
+  max_model_len: &max_model_len 16384
   tensor_parallel: &tensor_parallel 1
   worker_method: &worker_method spawn
   logging_level: &logging_level INFO
@@ -85,8 +85,8 @@ _anchors:
     tensor: 8
     workers: 8
   
-  # Storage class
-  storage_class: &storage_class ibm-spectrum-scale-fileset
+  # Storage class: "auto"/"default" = use cluster default; set explicitly to override
+  storage_class: &storage_class auto
   
   # Image pull policies
   pull_always: &pull_always Always
@@ -212,6 +212,10 @@ common: {}
 # For subchart usage
 modelservice:
   enabled: true
+  # URI protocol for model artifacts: "pvc" (default) or "hf" (HuggingFace)
+  # When "hf", modelArtifacts.uri becomes hf://<model.huggingfaceId>
+  # When "pvc", modelArtifacts.uri becomes pvc://<storage.modelPvc.name>/<model.path>
+  uriProtocol: pvc
 
 # Override service account name (optional)
 serviceAccountOverride: ""
@@ -223,7 +227,7 @@ schedulerName: default-scheduler
 # NAMESPACE CONFIGURATION
 # ============================================================================
 namespace:
-  name: auto
+  name: auto  # "auto" resolves to "llmdbench" at plan time; override via CLI --namespace
   labels:
     podSecurity:
       audit: privileged
@@ -266,7 +270,18 @@ storage:
   
   modelPvc:
     name: model-pvc
-    size: 100Gi
+    size: 300Gi
+    accessModes:
+      - ReadWriteMany
+    storageClassName: *storage_class
+
+  # Extra PVC — only created when name is non-empty.
+  # Mirrors bash LLMDBENCH_VLLM_COMMON_EXTRA_PVC_NAME.
+  # The PVC is NOT automatically mounted; scenarios must also add matching
+  # entries to vllmCommon.volumes/volumeMounts to wire it into pods.
+  extraPvc:
+    name: ""          # Empty = skip creation (default)
+    size: 10Gi
     accessModes:
       - ReadWriteMany
     storageClassName: *storage_class
@@ -277,7 +292,8 @@ storage:
 huggingface:
   secretName: llm-d-hf-token
   tokenKey: HF_TOKEN
-  tokenBase64: "REPLACE_BASE64_HF_TOKEN"
+  token: "REPLACE_TOKEN"  # Plain-text HF token (preferred — uses stringData in the K8s Secret)
+  tokenBase64: "REPLACE_TOKEN_B64"  # Base64-encoded HF token (fallback — uses data in the K8s Secret)
 
 # ============================================================================
 # IMAGE CONFIGURATION
@@ -285,29 +301,29 @@ huggingface:
 images:
   benchmark:
     repository: ghcr.io/llm-d/llm-d-benchmark
-    tag: v0.4.0
+    tag: auto
     pullPolicy: *pull_always
-  
+
   vllm:
     repository: ghcr.io/llm-d/llm-d-cuda
-    tag: sha-04f3538d79c4a5cd28514f1bd53d5e98aa5048d2
+    tag: auto
     pullPolicy: *pull_if_not_present
 
   vllmOpenai:
     repository: docker.io/vllm/vllm-openai
-    tag: latest
+    tag: auto
     pullPolicy: *pull_always
-  
+
   inferenceScheduler:
     repository: ghcr.io/llm-d/llm-d-inference-scheduler
-    tag: v0.4.0
+    tag: auto
     pullPolicy: *pull_always
-  
+
   routingSidecar:
     repository: ghcr.io/llm-d/llm-d-routing-sidecar
-    tag: latest
+    tag: auto
     pullPolicy: *pull_if_not_present
-  
+
   python:
     repository: python
     tag: "3.10"
@@ -322,6 +338,12 @@ helmRepositories:
     url: https://llm-d-incubation.github.io/llm-d-modelservice/
   llmDInfra:
     url: https://llm-d-incubation.github.io/llm-d-infra/
+  wva:
+    name: workload-variant-autoscaler
+    url: oci://ghcr.io/llm-d/workload-variant-autoscaler
+  kgateway:
+    name: kgateway
+    url: oci://cr.kgateway.dev/kgateway-dev/charts
 
 # ============================================================================
 # CHART VERSIONS
@@ -329,9 +351,11 @@ helmRepositories:
 chartVersions:
   istioBase: *istio_version
   istiod: *istio_version
-  llmDInfra: v1.3.5
-  llmDModelservice: v0.3.16
+  llmDInfra: v1.3.8
+  llmDModelservice: auto
   inferencePool: v1.2.0
+  gaie: v1.3.0
+  wva: 0.5.1-rc.2
 
 # ============================================================================
 # SERVICE ACCOUNT CONFIGURATION
@@ -419,7 +443,7 @@ annotations:
 # ============================================================================
 gateway:
   name: infra-llmdbench-inference-gateway
-  namespace: llm-d-vezio
+  namespace: auto  # Synced with namespace.name; resolved at plan time
   className: istio
   provider: istio
   version: *istio_version
@@ -845,10 +869,6 @@ standalone:
       memory: 40Gi
       cpu: "4"
   
-  # Shared memory
-  shm:
-    size: 16Gi
-  
   # Probe configuration
   probes:
     startup:
@@ -884,13 +904,30 @@ standalone:
     #   - "--max-num-batched-tokens 8192"
   
   # Model volume configuration
+  # NOTE: The model PVC is standalone-specific (not in vllmCommon.volumes)
+  # because modelservice handles its own model volume via the Helm chart.
   mountModelVolume: true
   modelMountPath: /model-storage
   modelPvcName: model-pvc
-  
-  # Preprocess configmap name
-  preprocessConfigMap: llm-d-benchmark-preprocesses
-  
+
+  # Launcher container (optional second container in the same pod)
+  # Mirrors bash LLMDBENCH_VLLM_STANDALONE_LAUNCHER feature.
+  # Shares the same pod volumes, env vars, and resources as the main container.
+  launcher:
+    enabled: false
+    port: 8001
+    vllmPort: 8002
+    imagePullPolicy: Always
+    # Image defaults to standalone.image if not specified
+    image:
+      repository: null  # null = inherit from standalone.image
+      tag: null          # null = inherit from standalone.image
+    # Custom args for the launcher. null = use default uvicorn command.
+    args: null
+    # Example custom args:
+    # args: |
+    #   uvicorn launcher:app --host 0.0.0.0 --log-level info --port 8001
+
   # Additional volume mounts
   additionalVolumeMounts: []
   # Example:
@@ -979,3 +1016,114 @@ extraObjects: []
 #       name: example-config
 #     data:
 #       key: value
+
+# ============================================================================
+# WVA (Workload Variant Autoscaler)
+# ============================================================================
+wva:
+  enabled: false
+  wellLitPath: inference-scheduling
+  namespace: ""  # defaults to common namespace
+  image:
+    repository: ghcr.io/llm-d/llm-d-workload-variant-autoscaler
+    tag: v0.5.1-rc.2
+  replicaCount: 1
+  controller:
+    enabled: true
+  metrics:
+    enabled: true
+    port: 8443
+    secure: true
+  prometheus:
+    baseUrl: https://thanos-querier.openshift-monitoring.svc.cluster.local
+    port: 9091
+  variantAutoscaling:
+    enabled: true
+    slo:
+      tpot: 10
+      ttft: 1000
+  hpa:
+    enabled: true
+    maxReplicas: 10
+    targetAvgValue: 1
+  vllmService:
+    enabled: true
+    nodePortMin: 30000
+    nodePortMax: 32767
+    interval: 15s
+    scheme: http
+
+# ============================================================================
+# GATEWAY PROVIDERS
+# ============================================================================
+gatewayProviders:
+  kgateway:
+    chartVersion: v2.1.1
+    namespace: kgateway-system
+    helmRepository: oci://cr.kgateway.dev/kgateway-dev/charts
+
+# ============================================================================
+# LWS (LeaderWorkerSet)
+# ============================================================================
+lws:
+  chartVersion: "0.8.0"
+  namespace: lws-system
+
+# ============================================================================
+# GATEWAY API CRD VERSIONS
+# ============================================================================
+gatewayApiCrd:
+  revision: v1.4.0
+  inferenceExtensionRevision: v1.3.0
+
+# ============================================================================
+# HARNESS CONFIGURATION
+# ============================================================================
+harness:
+  name: inference-perf
+  profile: sanity_random.yaml
+  executable: llm-d-benchmark.sh
+  condaEnvName: inference-perf-env
+  waitTimeout: 3600
+  loadParallelism: 1
+  podLabel: llmdbench-harness-launcher
+  debug: false
+  resources:
+    cpu: 16
+    memory: 32Gi
+  output: local
+  inferencePerf:
+    rayonNumThreads: 4
+
+# ============================================================================
+# EXPERIMENT RUNTIME DEFAULTS
+# ============================================================================
+experiment:
+  resultsDir: /requests
+  analyzeLocally: false
+  workspaceDir: /workspace
+  datasetUrl: ""
+  datasetDir: ""
+
+# ============================================================================
+# CONTROL TIMEOUTS
+# ============================================================================
+control:
+  waitTimeout: 900
+  waitPeriod: 10
+
+# ============================================================================
+# RELEASE CONFIGURATION
+# ============================================================================
+release: llmdbench
+
+# ============================================================================
+# OPENSHIFT MONITORING
+# ============================================================================
+openshiftMonitoring:
+  userWorkloadMonitoringNamespace: openshift-user-workload-monitoring
+
+# ============================================================================
+# INFERENCE PORT CONFIGURATION
+# ============================================================================
+vllmCommonInferencePort: 8000

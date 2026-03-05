@@ -1,0 +1,57 @@
+# [REQUIRED]
+{% set base_dir = base_dir | default('../') -%}
+base_dir: {{ base_dir }}
+
+# [REQUIRED]
+values_file:
+  path: {{ base_dir }}/templates/values/defaults.yaml
+
+# [REQUIRED]
+template_dir:
+  path: {{ base_dir }}/templates/jinja
+
+# [OPTIONAL]
+scenario_file:
+  path: {{ base_dir }}/scenarios/guides/pd-disaggregation.yaml
+
+# [OPTIONAL] Experiment definitions
+experiments:
+  - name: "pd-disaggregation"
+    attributes:
+      - name: "setup"
+        factors:
+          - name: deploy_methods
+            levels:
+              - modelservice
+              - standalone
+          - name: decode.replicas
+            levels: [1, 2, 3, 4]
+          - name: decode.parallelism.tensor
+            levels: [2, 4, 8]
+          - name: prefill.replicas
+            levels: [2, 4, 6, 8]
+          - name: prefill.parallelism.tensor
+            levels: [1, 2, 4]
+        treatments:
+          - "modelservice,1,8,8,1"
+          - "modelservice,1,8,4,2"
+          - "modelservice,1,8,2,4"
+          - "modelservice,1,4,6,2"
+          - "modelservice,2,4,4,2"
+          - "modelservice,3,4,2,2"
+          - "standalone,1,2,NA,NA"
+          - "standalone,1,4,NA,NA"
+          - "standalone,1,8,NA,NA"
+      - name: "run"
+        factors:
+          - name: max-concurrency
+            levels: [1, 8, 32, 64, 128, 256]
+          - name: num-prompts
+            levels: [10, 80, 320, 640, 1280, 2560]
+        treatments:
+          - "1,10"
+          - "8,80"
+          - "32,320"
+          - "64,640"
+          - "128,1280"
+          - "256,2560"
