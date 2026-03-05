@@ -336,7 +336,11 @@ def cli() -> None:
     # reusability and easier organization of multiple runs.
     #
 
-    overall_workspace = Path(args.workspace)
+    if args.workspace:
+        overall_workspace = Path(args.workspace)
+    else:
+        import tempfile
+        overall_workspace = Path(tempfile.mkdtemp(prefix="workspace_llmdbench_"))
     if "workspace" not in overall_workspace.name.lower():
         overall_workspace = overall_workspace.with_name(
             f"workspace_{overall_workspace.name}"
